@@ -1,0 +1,2 @@
+ALTER TABLE `doctor_notifications` MODIFY COLUMN `type` enum('consultation_request','new_review','commission_paid','welcome') NOT NULL;--> statement-breakpoint
+ALTER TABLE `doctor_profiles` ADD `onboardingCompleted` boolean DEFAULT false NOT NULL;

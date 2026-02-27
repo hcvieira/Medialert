@@ -1,0 +1,1 @@
+ALTER TABLE `doctor_profiles` ADD `address` varchar(512);

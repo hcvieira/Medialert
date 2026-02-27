@@ -1,0 +1,184 @@
+import * as Api from "@/lib/_core/api";
+import * as Auth from "@/lib/_core/auth";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Platform } from "react-native";
+
+type UseAuthOptions = {
+  autoFetch?: boolean;
+};
+
+export function useAuth(options?: UseAuthOptions) {
+  const { autoFetch = true } = options ?? {};
+  const [user, setUser] = useState<Auth.User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const fetchUser = useCallback(async () => {
+    console.log("[useAuth] fetchUser called");
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Web platform: check localStorage first (set by OAuth callback)
+      if (Platform.OS === "web") {
+        console.log("[useAuth] Web platform: checking localStorage...");
+        // Check session token first
+        const sessionToken = await Auth.getSessionToken();
+        if (!sessionToken) {
+          console.log("[useAuth] Web: no session token, user is not authenticated");
+          setUser(null);
+          await Auth.clearUserInfo();
+          return;
+        }
+        // Check if we have cached user info in localStorage (set by OAuth callback)
+        const cachedUser = await Auth.getUserInfo();
+        if (cachedUser) {
+          console.log("[useAuth] Web: found cached user in localStorage:", cachedUser);
+          setUser(cachedUser);
+          // Silently verify with API in background using Bearer token
+          // Note: do NOT clear user on failure - keep cached user to avoid logout loops
+          Api.getMe()
+            .then((apiUser) => {
+              if (apiUser) {
+                // Update cached user with fresh data from API
+                const refreshed: Auth.User = {
+                  id: apiUser.id,
+                  openId: apiUser.openId,
+                  name: apiUser.name,
+                  email: apiUser.email,
+                  loginMethod: apiUser.loginMethod,
+                  lastSignedIn: new Date(apiUser.lastSignedIn),
+                };
+                Auth.setUserInfo(refreshed);
+                setUser(refreshed);
+              }
+              // If API fails, keep using cached user - don't logout
+            })
+            .catch(() => {
+              // Ignore API errors - keep using cached user
+              console.log("[useAuth] Web: API verification error, keeping cached user");
+            });
+          return;
+        }
+
+        // Have token but no cached user - fetch from API
+        console.log("[useAuth] Web: have token but no cached user, fetching from API...");
+        const apiUser = await Api.getMe();
+        console.log("[useAuth] API user response:", apiUser);
+
+        if (apiUser) {
+          const userInfo: Auth.User = {
+            id: apiUser.id,
+            openId: apiUser.openId,
+            name: apiUser.name,
+            email: apiUser.email,
+            loginMethod: apiUser.loginMethod,
+            lastSignedIn: new Date(apiUser.lastSignedIn),
+          };
+          setUser(userInfo);
+          await Auth.setUserInfo(userInfo);
+          console.log("[useAuth] Web user set from API:", userInfo);
+        } else {
+          console.log("[useAuth] Web: No authenticated user from API");
+          setUser(null);
+          await Auth.clearUserInfo();
+          await Auth.removeSessionToken();
+        }
+        return;
+      }
+
+      // Native platform: use token-based auth
+      console.log("[useAuth] Native platform: checking for session token...");
+      const sessionToken = await Auth.getSessionToken();
+      console.log(
+        "[useAuth] Session token:",
+        sessionToken ? `present (${sessionToken.substring(0, 20)}...)` : "missing",
+      );
+      if (!sessionToken) {
+        console.log("[useAuth] No session token, setting user to null");
+        setUser(null);
+        return;
+      }
+
+      // Use cached user info for native (token validates the session)
+      const cachedUser = await Auth.getUserInfo();
+      console.log("[useAuth] Cached user:", cachedUser);
+      if (cachedUser) {
+        console.log("[useAuth] Using cached user info");
+        setUser(cachedUser);
+      } else {
+        console.log("[useAuth] No cached user, setting user to null");
+        setUser(null);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error("Failed to fetch user");
+      console.error("[useAuth] fetchUser error:", error);
+      setError(error);
+      setUser(null);
+    } finally {
+      setLoading(false);
+      console.log("[useAuth] fetchUser completed, loading:", false);
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await Api.logout();
+    } catch (err) {
+      console.error("[Auth] Logout API call failed:", err);
+      // Continue with logout even if API call fails
+    } finally {
+      await Auth.removeSessionToken();
+      await Auth.clearUserInfo();
+      setUser(null);
+      setError(null);
+    }
+  }, []);
+
+  const isAuthenticated = useMemo(() => Boolean(user), [user]);
+
+  useEffect(() => {
+    console.log("[useAuth] useEffect triggered, autoFetch:", autoFetch, "platform:", Platform.OS);
+    if (autoFetch) {
+      if (Platform.OS === "web") {
+        // Web: check localStorage first, then API
+        console.log("[useAuth] Web: checking localStorage then API...");
+        fetchUser();
+      } else {
+        // Native: check for cached user info first for faster initial load
+        Auth.getUserInfo().then((cachedUser) => {
+          console.log("[useAuth] Native cached user check:", cachedUser);
+          if (cachedUser) {
+            console.log("[useAuth] Native: setting cached user immediately");
+            setUser(cachedUser);
+            setLoading(false);
+          } else {
+            // No cached user, check session token
+            fetchUser();
+          }
+        });
+      }
+    } else {
+      console.log("[useAuth] autoFetch disabled, setting loading to false");
+      setLoading(false);
+    }
+  }, [autoFetch, fetchUser]);
+
+  useEffect(() => {
+    console.log("[useAuth] State updated:", {
+      hasUser: !!user,
+      loading,
+      isAuthenticated,
+      error: error?.message,
+    });
+  }, [user, loading, isAuthenticated, error]);
+
+  return {
+    user,
+    loading,
+    error,
+    isAuthenticated,
+    refresh: fetchUser,
+    logout,
+  };
+}

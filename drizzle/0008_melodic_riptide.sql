@@ -1,0 +1,1 @@
+ALTER TABLE `dose_records` MODIFY COLUMN `status` enum('pending','taken','missed','cancelled') NOT NULL DEFAULT 'pending';
